@@ -1,5 +1,45 @@
 # Jonas clément et Matteo
 
+## Lancer l'application
+
+Depuis la racine du dépôt, avec Python 3.11 ou plus.
+
+Windows (PowerShell) :
+
+```powershell
+cd code-streamlit
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+Si PowerShell refuse d'activer l'environnement, lancez d'abord
+`Set-ExecutionPolicy -Scope Process RemoteSigned`.
+
+macOS ou Linux :
+
+```bash
+cd code-streamlit
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+Streamlit ouvre le navigateur sur <http://localhost:8501>. `Ctrl+C` dans le
+terminal arrête l'application.
+
+Les fois suivantes, l'environnement existe déjà : il suffit de l'activer puis de
+lancer `streamlit run app.py`.
+
+Pour lancer les tests :
+
+```bash
+pytest
+```
+
+
 
 # Partage de frais
 

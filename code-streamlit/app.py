@@ -2,6 +2,13 @@ import streamlit as st
 from datetime import date
 
 from base import ouvrir_base
+from calculs import (
+    calculer_soldes,
+    raisons_de_ne_pas_supprimer,
+    stats_membres,
+    valider_depense,
+    valider_nom_membre,
+)
 
 st.set_page_config(page_title="Partage de frais", layout="centered")
 st.title("Partage de frais")
@@ -51,15 +58,63 @@ tab_membres, tab_depenses, tab_soldes = st.tabs(["Membres", "Dépenses", "Soldes
 # === Membres ===
 with tab_membres:
     st.subheader("Membres")
-    if membres:
-        for m in membres:
-            st.write(f"- {m['nom']}")
-    else:
-        st.info("Aucun membre pour l'instant.")
 
+    if not membres:
+        st.info("Aucun membre pour l'instant.")
+    else:
+        with ouvrir_base() as conn:
+            stats = stats_membres(conn, groupe_id)
+
+        for m in membres:
+            s = stats[m["id"]]
+            with st.expander(f"{m['nom']} — {s['paye'] / 100:.2f} € payés"):
+                st.caption(
+                    f"{s['nb_payees']} dépense(s) payée(s)"
+                    f" · participe à {s['nb_participations']} dépense(s)"
+                )
+
+                col_nom, col_suppr = st.columns([3, 1])
+
+                with col_nom:
+                    with st.form(f"renommer_{m['id']}"):
+                        nouveau_nom = st.text_input("Nom", value=m["nom"])
+                        renomme = st.form_submit_button("Renommer")
+                    if renomme:
+                        autres = [a["nom"] for a in membres if a["id"] != m["id"]]
+                        erreurs = valider_nom_membre(nouveau_nom, autres)
+                        if erreurs:
+                            for e in erreurs:
+                                st.error(e)
+                        elif nouveau_nom.strip() == m["nom"]:
+                            st.info("Le nom n'a pas changé.")
+                        else:
+                            with ouvrir_base() as conn:
+                                conn.execute(
+                                    "UPDATE membres SET nom = ? WHERE id = ?",
+                                    [nouveau_nom.strip(), m["id"]],
+                                )
+                            st.rerun()
+
+                with col_suppr:
+                    raisons = raisons_de_ne_pas_supprimer(s)
+                    if raisons:
+                        st.button("Supprimer", key=f"suppr_{m['id']}", disabled=True)
+                        st.caption("Rattaché à : " + ", ".join(raisons))
+                    elif st.button("Supprimer", key=f"suppr_{m['id']}"):
+                        with ouvrir_base() as conn:
+                            conn.execute("DELETE FROM membres WHERE id = ?", [m["id"]])
+                        st.rerun()
+
+    st.subheader("Ajouter un membre")
     with st.form("ajout_membre"):
         nom_m = st.text_input("Nouveau membre")
-        if st.form_submit_button("Ajouter") and nom_m.strip():
+        ajoute = st.form_submit_button("Ajouter")
+    if ajoute:
+        erreurs = valider_nom_membre(nom_m, [m["nom"] for m in membres])
+        if erreurs:
+            for e in erreurs:
+                st.error(e)
+        else:
             with ouvrir_base() as conn:
                 conn.execute(
                     "INSERT INTO membres (groupe_id, nom) VALUES (?,?)",
@@ -91,23 +146,15 @@ with tab_depenses:
             submitted = st.form_submit_button("Ajouter")
 
         if submitted:
-            erreurs = []
-            if not libelle.strip():
-                erreurs.append("Le libellé est obligatoire.")
-            if montant <= 0:
-                erreurs.append("Le montant doit être positif.")
-            if not part_ids:
-                erreurs.append("Au moins un participant est requis.")
             d_str = str(date_dep)
-            if d_str < groupe["date_debut"] or d_str > groupe["date_fin"]:
-                erreurs.append(
-                    f"La date doit être entre {groupe['date_debut']} et {groupe['date_fin']}."
-                )
+            montant_c = int(round(montant * 100))
+            erreurs = valider_depense(
+                libelle, montant_c, d_str, part_ids, groupe["date_debut"], groupe["date_fin"]
+            )
             if erreurs:
                 for e in erreurs:
                     st.error(e)
             else:
-                montant_c = int(round(montant * 100))
                 with ouvrir_base() as conn:
                     cur = conn.execute(
                         "INSERT INTO depenses (groupe_id, libelle, montant_centimes, date, payeur_id) VALUES (?,?,?,?,?)",
@@ -166,28 +213,8 @@ with tab_soldes:
     if not membres:
         st.info("Aucun membre.")
     else:
-        soldes = {m["id"]: 0 for m in membres}
-
         with ouvrir_base() as conn:
-            toutes = conn.execute(
-                "SELECT id, montant_centimes, payeur_id FROM depenses WHERE groupe_id = ?",
-                [groupe_id],
-            ).fetchall()
-            for dep in toutes:
-                parts = conn.execute(
-                    "SELECT membre_id FROM participants WHERE depense_id = ? ORDER BY rowid",
-                    [dep["id"]],
-                ).fetchall()
-                part_ids_dep = [p["membre_id"] for p in parts]
-                n = len(part_ids_dep)
-                if n == 0:
-                    continue
-                montant = dep["montant_centimes"]
-                base = montant // n
-                reste = montant % n
-                soldes[dep["payeur_id"]] += montant
-                for i, mid in enumerate(part_ids_dep):
-                    soldes[mid] -= base + (1 if i < reste else 0)
+            soldes = calculer_soldes(conn, groupe_id)
 
         for m in membres:
             s = soldes[m["id"]]
