@@ -22,9 +22,9 @@ Un groupe d’amis part une semaine en vacances. Chacun paie des choses pour les
 
 ## Ce que l’application doit faire
 
-- [ ] Créer un groupe et ses membres
-- [ ] Ajouter ou supprimer une dépense
-- [ ] Afficher le solde de chaque membre
+- [x] Créer un groupe et ses membres
+- [x] Ajouter ou supprimer une dépense
+- [x] Afficher le solde de chaque membre
 
 ## Les règles
 
