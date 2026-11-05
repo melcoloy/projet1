@@ -5,6 +5,35 @@
 
 > **Noter les dépenses d’un séjour entre amis et savoir à tout moment qui doit combien à qui.**
 
+---
+
+## 🚀 Comment lancer l'application
+
+### 1. Installation des dépendances
+Ouvrez un terminal dans le projet et installez les dépendances requises :
+```bash
+cd code-streamlit
+pip install -r requirements.txt
+```
+
+### 2. Démarrer l'application
+Lancez Streamlit depuis le dossier `code-streamlit` :
+```bash
+cd code-streamlit
+streamlit run app.py
+```
+L'application sera alors accessible dans votre navigateur à l'adresse : **http://localhost:8501**
+
+### 3. Lancer les tests
+Pour exécuter la suite de tests automatisés (vérifiant toutes les règles de calcul et d'interface) :
+```bash
+python code-streamlit/test_app.py
+# ou avec pytest si installé :
+pytest code-streamlit/test_app.py
+```
+
+---
+
 Séance 1 · En binôme · Comme vous le faites d’habitude, avec ou sans IA, ChatGPT compris.
 
 [Démarrer](#démarrer)
