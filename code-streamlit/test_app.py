@@ -273,6 +273,121 @@ def test_format_date_fr():
     assert modele.formater_date_fr(date(2026, 7, 2)) == "02/07/2026"
 
 
+def test_contrainte_unicite_noms():
+    """Vérifie que deux personnes ne peuvent pas avoir le même nom (dans la création ou l'ajout)."""
+    conn = creer_base_de_test()
+
+    # 1. Doublon à la création du groupe
+    try:
+        modele.creer_groupe(
+            conn,
+            nom="Groupe Doublons",
+            date_debut="2026-08-01",
+            date_fin="2026-08-05",
+            noms_membres=["Alice", "Bob", "alice"],  # casse différente
+        )
+        assert False, "La création d'un groupe avec deux personnes ayant le même nom aurait dû être refusée."
+    except ValueError as e:
+        assert "Deux personnes ne peuvent pas avoir le même nom" in str(e)
+
+    # 2. Doublon lors de l'ajout d'un membre à un groupe existant
+    try:
+        modele.ajouter_membre(conn, groupe_id=1, nom="Alice")  # Alice existe déjà dans groupe 1
+        assert False, "L'ajout d'un membre avec un nom déjà existant aurait dû être refusé."
+    except ValueError as e:
+        assert "Deux personnes ne peuvent pas avoir le même nom" in str(e)
+
+
+def test_contrainte_categorie_obligatoire():
+    """Vérifie que les dépenses doivent obligatoirement avoir une catégorie."""
+    conn = creer_base_de_test()
+
+    # Dépense valide avec catégorie
+    dep_id = modele.ajouter_depense(
+        conn,
+        groupe_id=1,
+        libelle="Restaurant italien",
+        montant_centimes=4000,
+        date_val="2026-07-03",
+        payeur_id=1,
+        participant_ids=[1, 2],
+        categorie="Restaurant",
+    )
+    depenses = modele.obtenir_depenses(conn, 1)
+    dep_creee = next(d for d in depenses if d["id"] == dep_id)
+    assert dep_creee["categorie"] == "Restaurant"
+
+    # Dépense sans catégorie (chaîne vide)
+    try:
+        modele.ajouter_depense(
+            conn,
+            groupe_id=1,
+            libelle="Sans catégorie",
+            montant_centimes=1500,
+            date_val="2026-07-03",
+            payeur_id=1,
+            participant_ids=[1, 2],
+            categorie="",
+        )
+        assert False, "Une dépense sans catégorie aurait dû être refusée."
+    except ValueError as e:
+        assert "catégorie" in str(e).lower()
+
+
+def test_contrainte_remboursement_entre_membres():
+    """
+    Vérifie le remboursement entre membres (type de dépense particulier d'un membre vers un autre) :
+    - Alice a payé 30 € pour Alice, Bob, Chloé -> Alice +20 €, Bob -10 €, Chloé -10 €.
+    - Bob rembourse 10 € à Alice.
+    - Résultat attendu : Bob solde = 0,00 € ; Alice solde = +10,00 € ; Chloé solde = -10,00 €.
+    """
+    conn = creer_base_de_test()
+
+    # Soldes initiaux
+    soldes_init = modele.calculer_soldes(conn, 1)
+    assert soldes_init[1]["solde_centimes"] == 2000
+    assert soldes_init[2]["solde_centimes"] == -1000
+
+    # Bob (id 2) rembourse 10 € (1000 cts) à Alice (id 1)
+    remb_id = modele.ajouter_remboursement(
+        conn,
+        groupe_id=1,
+        payeur_id=2,
+        beneficiaire_id=1,
+        montant_centimes=1000,
+        date_val="2026-07-04",
+    )
+
+    # Vérification que c'est bien une dépense de catégorie 'Remboursement' avec 1 seul participant
+    depenses = modele.obtenir_depenses(conn, 1)
+    remb_dep = next(d for d in depenses if d["id"] == remb_id)
+    assert remb_dep["categorie"] == "Remboursement"
+    assert remb_dep["est_remboursement"] is True
+    assert len(remb_dep["participants"]) == 1
+    assert remb_dep["participants"][0]["id"] == 1
+
+    # Nouveaux soldes
+    soldes_apres = modele.calculer_soldes(conn, 1)
+    assert soldes_apres[2]["solde_centimes"] == 0      # Bob a réglé sa dette
+    assert soldes_apres[1]["solde_centimes"] == 1000   # Alice a reçu son dû de Bob, Chloé lui doit encore 10 €
+    assert soldes_apres[3]["solde_centimes"] == -1000  # Chloé doit toujours 10 €
+    assert sum(s["solde_centimes"] for s in soldes_apres.values()) == 0
+
+    # Vérification qu'un membre ne peut pas se rembourser lui-même
+    try:
+        modele.ajouter_remboursement(
+            conn,
+            groupe_id=1,
+            payeur_id=1,
+            beneficiaire_id=1,
+            montant_centimes=500,
+            date_val="2026-07-04",
+        )
+        assert False, "L'auto-remboursement aurait dû être refusé."
+    except ValueError as e:
+        assert "lui-même" in str(e)
+
+
 if __name__ == "__main__":
     # Permet de lancer directement les tests via 'python test_app.py'
     tests = [
@@ -286,6 +401,9 @@ if __name__ == "__main__":
         test_somme_soldes_toujours_zero,
         test_remboursements_recommandes,
         test_format_date_fr,
+        test_contrainte_unicite_noms,
+        test_contrainte_categorie_obligatoire,
+        test_contrainte_remboursement_entre_membres,
         test_accueil,
     ]
     succes = 0

@@ -13,4 +13,10 @@ def ouvrir_base():
     conn.execute("PRAGMA foreign_keys = ON")
     if neuve:
         conn.executescript((RACINE / "base.sql").read_text(encoding="utf-8"))
+    else:
+        try:
+            conn.execute("ALTER TABLE depenses ADD COLUMN categorie TEXT NOT NULL DEFAULT 'Autre'")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
     return conn

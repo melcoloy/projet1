@@ -6,6 +6,17 @@ Gère les groupes, les membres, les dépenses et le calcul exact des soldes.
 from datetime import date
 from typing import Any, Dict, List, Optional
 
+CATEGORIES_STANDARDS = [
+    "Alimentation",
+    "Restaurant",
+    "Transport",
+    "Logement",
+    "Activités",
+    "Autre",
+]
+CATEGORIE_REMBOURSEMENT = "Remboursement"
+TOUTES_CATEGORIES = CATEGORIES_STANDARDS + [CATEGORIE_REMBOURSEMENT]
+
 
 def valider_date_format(valeur: Any) -> str:
     """Convertit et valide une date au format YYYY-MM-DD."""
@@ -69,13 +80,21 @@ def creer_groupe(
             f"La date de début ({debut_str}) ne peut pas être postérieure à la date de fin ({fin_str})."
         )
 
-    # Nettoyage des noms de membres
+    # Nettoyage et vérification d'unicité des noms de membres
     membres_propres = []
     if noms_membres:
+        noms_vus = set()
         for m in noms_membres:
             nom_m = m.strip()
-            if nom_m and nom_m not in membres_propres:
-                membres_propres.append(nom_m)
+            if not nom_m:
+                continue
+            nom_lower = nom_m.lower()
+            if nom_lower in noms_vus:
+                raise ValueError(
+                    f"Deux personnes ne peuvent pas avoir le même nom dans un groupe ('{nom_m}')."
+                )
+            noms_vus.add(nom_lower)
+            membres_propres.append(nom_m)
 
     cur = conn.execute(
         "INSERT INTO groupes (nom, date_debut, date_fin) VALUES (?, ?, ?)",
@@ -124,7 +143,9 @@ def ajouter_membre(conn, groupe_id: int, nom: str) -> int:
         [groupe_id, nom],
     ).fetchone()
     if existant:
-        raise ValueError(f"Un membre nommé '{nom}' existe déjà dans ce groupe.")
+        raise ValueError(
+            f"Deux personnes ne peuvent pas avoir le même nom : un membre nommé '{nom}' existe déjà dans ce groupe."
+        )
 
     cur = conn.execute(
         "INSERT INTO membres (groupe_id, nom) VALUES (?, ?)",
@@ -167,6 +188,7 @@ def ajouter_depense(
     date_val: Any,
     payeur_id: int,
     participant_ids: List[int],
+    categorie: str = "Autre",
 ) -> int:
     """
     Ajoute une dépense en vérifiant toutes les règles métier :
@@ -175,6 +197,7 @@ def ajouter_depense(
     - La date d’une dépense est comprise dans le séjour, dates de début et de fin incluses.
     - Une dépense est partagée à parts égales entre ses participants.
       Le centime restant va au premier participant ajouté.
+    - La dépense a obligatoirement une catégorie renseignée.
     """
     groupe = obtenir_groupe(conn, groupe_id)
     if not groupe:
@@ -183,6 +206,10 @@ def ajouter_depense(
     libelle = (libelle or "").strip()
     if not libelle:
         raise ValueError("Le libellé de la dépense ne peut pas être vide.")
+
+    categorie = (categorie or "").strip()
+    if not categorie:
+        raise ValueError("Une dépense doit avoir une catégorie.")
 
     if montant_centimes <= 0:
         raise ValueError("Le montant d'une dépense doit être strictement supérieur à 0 €.")
@@ -209,9 +236,9 @@ def ajouter_depense(
 
     # Insertion de la dépense
     cur = conn.execute(
-        "INSERT INTO depenses (groupe_id, libelle, montant_centimes, date, payeur_id) "
-        "VALUES (?, ?, ?, ?, ?)",
-        [groupe_id, libelle, montant_centimes, date_str, payeur_id],
+        "INSERT INTO depenses (groupe_id, libelle, montant_centimes, date, payeur_id, categorie) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        [groupe_id, libelle, montant_centimes, date_str, payeur_id, categorie],
     )
     depense_id = cur.lastrowid
 
@@ -226,6 +253,46 @@ def ajouter_depense(
     return depense_id
 
 
+def ajouter_remboursement(
+    conn,
+    groupe_id: int,
+    payeur_id: int,
+    beneficiaire_id: int,
+    montant_centimes: int,
+    date_val: Any,
+    libelle: Optional[str] = None,
+) -> int:
+    """
+    Enregistre un remboursement entre deux membres du groupe :
+    - Type de dépense particulier d'un membre vers un autre.
+    - Le payeur est le membre qui donne l'argent (qui rembourse).
+    - Le bénéficiaire est l'unique participant qui reçoit le remboursement.
+    - Catégorie automatiquement fixée à 'Remboursement'.
+    """
+    if payeur_id == beneficiaire_id:
+        raise ValueError("Un membre ne peut pas se rembourser lui-même.")
+
+    membres_map = {m["id"]: m["nom"] for m in obtenir_membres(conn, groupe_id)}
+    if payeur_id not in membres_map:
+        raise ValueError("Le membre qui rembourse doit appartenir au groupe.")
+    if beneficiaire_id not in membres_map:
+        raise ValueError("Le membre remboursé doit appartenir au groupe.")
+
+    if not libelle or not libelle.strip():
+        libelle = f"Remboursement de {membres_map[payeur_id]} à {membres_map[beneficiaire_id]}"
+
+    return ajouter_depense(
+        conn=conn,
+        groupe_id=groupe_id,
+        libelle=libelle,
+        montant_centimes=montant_centimes,
+        date_val=date_val,
+        payeur_id=payeur_id,
+        participant_ids=[beneficiaire_id],
+        categorie=CATEGORIE_REMBOURSEMENT,
+    )
+
+
 def modifier_depense(
     conn,
     depense_id: int,
@@ -235,6 +302,7 @@ def modifier_depense(
     date_val: Any,
     payeur_id: int,
     participant_ids: List[int],
+    categorie: str = "Autre",
 ) -> None:
     """
     Modifie une dépense existante en réappliquant toutes les règles métier.
@@ -246,6 +314,10 @@ def modifier_depense(
     libelle = (libelle or "").strip()
     if not libelle:
         raise ValueError("Le libellé de la dépense ne peut pas être vide.")
+
+    categorie = (categorie or "").strip()
+    if not categorie:
+        raise ValueError("Une dépense doit avoir une catégorie.")
 
     if montant_centimes <= 0:
         raise ValueError("Le montant d'une dépense doit être strictement supérieur à 0 €.")
@@ -271,8 +343,8 @@ def modifier_depense(
             raise ValueError(f"Le participant {pid} n'appartient pas au groupe.")
 
     conn.execute(
-        "UPDATE depenses SET libelle = ?, montant_centimes = ?, date = ?, payeur_id = ? WHERE id = ?",
-        [libelle, montant_centimes, date_str, payeur_id, depense_id],
+        "UPDATE depenses SET libelle = ?, montant_centimes = ?, date = ?, payeur_id = ?, categorie = ? WHERE id = ?",
+        [libelle, montant_centimes, date_str, payeur_id, categorie, depense_id],
     )
 
     # Remplacement des participants dans l'ordre fourni
@@ -300,7 +372,7 @@ def obtenir_depenses(conn, groupe_id: int) -> List[Dict[str, Any]]:
     """
     rows = conn.execute(
         """
-        SELECT d.id, d.groupe_id, d.libelle, d.montant_centimes, d.date, d.payeur_id, m.nom AS payeur_nom
+        SELECT d.id, d.groupe_id, d.libelle, d.montant_centimes, d.date, d.payeur_id, d.categorie, m.nom AS payeur_nom
         FROM depenses d
         JOIN membres m ON d.payeur_id = m.id
         WHERE d.groupe_id = ?
@@ -312,6 +384,7 @@ def obtenir_depenses(conn, groupe_id: int) -> List[Dict[str, Any]]:
     depenses = []
     for r in rows:
         dep = dict(r)
+        dep["categorie"] = dep.get("categorie") or "Autre"
         # Récupère les participants dans l'ordre d'insertion (rowid)
         part_rows = conn.execute(
             """
@@ -340,6 +413,9 @@ def obtenir_depenses(conn, groupe_id: int) -> List[Dict[str, Any]]:
             }
             for p in part_rows
         ]
+        dep["est_remboursement"] = (
+            dep["categorie"] == CATEGORIE_REMBOURSEMENT and len(dep["participants"]) == 1
+        )
         depenses.append(dep)
 
     return depenses

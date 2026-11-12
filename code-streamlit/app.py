@@ -107,8 +107,18 @@ with st.sidebar.expander("➕ Créer un nouveau groupe", expanded=(len(groupes) 
                     for m in nouveaux_membres_txt.replace(",", "\n").split("\n")
                     if m.strip()
                 ]
+                noms_vus = set()
+                doublons = set()
+                for m in lignes_membres:
+                    m_low = m.lower()
+                    if m_low in noms_vus:
+                        doublons.add(m)
+                    noms_vus.add(m_low)
+
                 if not lignes_membres:
                     st.error("Veuillez renseigner au moins un membre.")
+                elif doublons:
+                    st.error(f"Deux personnes ne peuvent pas avoir le même nom dans le groupe : {', '.join(doublons)}")
                 else:
                     try:
                         nouveau_id = modele.creer_groupe(
@@ -237,19 +247,39 @@ with tab_soldes:
             st.info("Tous les comptes sont équilibrés ! Aucun remboursement n'est nécessaire.")
         else:
             st.write("Voici la façon la plus simple d'équilibrer les comptes :")
-            for r in remboursements:
-                st.markdown(
-                    f"- **{r['de']}** doit rembourser **{modele.centimes_en_euros_str(r['montant_centimes'])}** à **{r['a']}**"
-                )
+            for idx_r, r in enumerate(remboursements):
+                col_r_txt, col_r_btn = st.columns([4, 2])
+                with col_r_txt:
+                    st.markdown(
+                        f"- **{r['de']}** doit rembourser **{modele.centimes_en_euros_str(r['montant_centimes'])}** à **{r['a']}**"
+                    )
+                with col_r_btn:
+                    if st.button("💸 Enregistrer le virement", key=f"btn_regler_{idx_r}_{r['de']}_{r['a']}"):
+                        de_id = next(m["id"] for m in membres_actifs if m["nom"] == r["de"])
+                        a_id = next(m["id"] for m in membres_actifs if m["nom"] == r["a"])
+                        debut_sejour = date.fromisoformat(groupe_actif["date_debut"])
+                        fin_sejour = date.fromisoformat(groupe_actif["date_fin"])
+                        aujourdhui = date.today()
+                        date_v = aujourdhui if (debut_sejour <= aujourdhui <= fin_sejour) else debut_sejour
+                        modele.ajouter_remboursement(
+                            conn,
+                            groupe_id=groupe_actif_id,
+                            payeur_id=de_id,
+                            beneficiaire_id=a_id,
+                            montant_centimes=r["montant_centimes"],
+                            date_val=date_v.isoformat(),
+                        )
+                        st.toast(f"Remboursement de {r['de']} à {r['a']} enregistré !")
+                        st.rerun()
 
 # ------------------------------------------------------------------------------
-# ONGLET 2 : AJOUTER UNE DÉPENSE
+# ONGLET 2 : AJOUTER UNE DÉPENSE OU UN REMBOURSEMENT
 # ------------------------------------------------------------------------------
 with tab_ajouter_depense:
-    st.markdown("### Enregistrer une nouvelle dépense")
+    st.markdown("### Enregistrer une opération")
 
     if not membres_actifs:
-        st.warning("Ajoutez d'abord des membres au groupe pour pouvoir enregistrer une dépense.")
+        st.warning("Ajoutez d'abord des membres au groupe pour pouvoir enregistrer une opération.")
     else:
         # Convertir les dates du séjour pour initialiser le sélecteur
         debut_sejour = date.fromisoformat(groupe_actif["date_debut"])
@@ -258,105 +288,197 @@ with tab_ajouter_depense:
         # Date par défaut comprise dans le séjour
         date_defaut = aujourdhui if (debut_sejour <= aujourdhui <= fin_sejour) else debut_sejour
 
-        with st.form("form_nouvelle_depense", clear_on_submit=True):
-            libelle = st.text_input("Libellé de la dépense *", placeholder="Ex: Courses, Restaurant, Plein d'essence, Musée...")
+        type_operation = st.radio(
+            "Type d'opération :",
+            ["💳 Dépense partagée", "💸 Remboursement entre membres"],
+            horizontal=True,
+        )
 
-            col_m, col_d = st.columns(2)
-            montant_saisi = col_m.number_input(
-                "Montant en euros (€) *",
-                min_value=0.0,
-                value=0.0,
-                step=1.0,
-                format="%.2f",
-                help="Le montant doit être strictement supérieur à 0 €.",
-            )
+        if type_operation == "💳 Dépense partagée":
+            with st.form("form_nouvelle_depense", clear_on_submit=True):
+                libelle = st.text_input("Libellé de la dépense *", placeholder="Ex: Courses, Restaurant, Plein d'essence, Musée...")
 
-            date_depense = col_d.date_input(
-                "Date de la dépense *",
-                value=date_defaut,
-                format="DD/MM/YYYY",
-                help=(
-                    f"La date doit être comprise dans le séjour : du "
-                    f"{modele.formater_date_fr(groupe_actif['date_debut'])} au "
-                    f"{modele.formater_date_fr(groupe_actif['date_fin'])} inclus."
-                ),
-            )
+                col_cat, col_m, col_d = st.columns(3)
+                categorie = col_cat.selectbox(
+                    "Catégorie *",
+                    options=modele.CATEGORIES_STANDARDS,
+                    help="Chaque dépense doit obligatoirement avoir une catégorie.",
+                )
 
-            # Sélection du payeur
-            payeur = st.selectbox(
-                "Payeur (qui a réglé la dépense ?) *",
-                options=membres_actifs,
-                format_func=lambda m: m["nom"],
-            )
+                montant_saisi = col_m.number_input(
+                    "Montant en euros (€) *",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1.0,
+                    format="%.2f",
+                    help="Le montant doit être strictement supérieur à 0 €.",
+                )
 
-            # Sélection des participants
-            st.write("**Participants (qui partage cette dépense ?) ***")
-            st.caption(
-                "💡 *Règle : La dépense est partagée à parts égales. "
-                "Le centime restant va au premier participant ajouté.*"
-            )
+                date_depense = col_d.date_input(
+                    "Date de la dépense *",
+                    value=date_defaut,
+                    format="DD/MM/YYYY",
+                    help=(
+                        f"La date doit être comprise dans le séjour : du "
+                        f"{modele.formater_date_fr(groupe_actif['date_debut'])} au "
+                        f"{modele.formater_date_fr(groupe_actif['date_fin'])} inclus."
+                    ),
+                )
 
-            participants_selectionnes = st.multiselect(
-                "Sélectionnez les participants (dans l'ordre souhaité) :",
-                options=membres_actifs,
-                default=membres_actifs,
-                format_func=lambda m: m["nom"],
-            )
+                # Sélection du payeur
+                payeur = st.selectbox(
+                    "Payeur (qui a réglé la dépense ?) *",
+                    options=membres_actifs,
+                    format_func=lambda m: m["nom"],
+                )
 
-            # Prévisualisation du partage
-            if montant_saisi > 0 and participants_selectionnes:
-                montant_cts = int(round(montant_saisi * 100))
-                p_ids = [p["id"] for p in participants_selectionnes]
-                repartition = modele.calculer_parts_depense(montant_cts, p_ids)
-                id_to_nom = {m["id"]: m["nom"] for m in membres_actifs}
-                apercu_parts = [
-                    f"{id_to_nom[r['membre_id']]}: {modele.centimes_en_euros_str(r['part_centimes'])}"
-                    for r in repartition
-                ]
-                st.info(f"🔎 **Aperçu du partage :** {', '.join(apercu_parts)}")
+                # Sélection des participants
+                st.write("**Participants (qui partage cette dépense ?) ***")
+                st.caption(
+                    "💡 *Règle : La dépense est partagée à parts égales. "
+                    "Le centime restant va au premier participant ajouté.*"
+                )
 
-            btn_ajouter_depense = st.form_submit_button("Ajouter la dépense", type="primary")
+                participants_selectionnes = st.multiselect(
+                    "Sélectionnez les participants (dans l'ordre souhaité) :",
+                    options=membres_actifs,
+                    default=membres_actifs,
+                    format_func=lambda m: m["nom"],
+                )
 
-            if btn_ajouter_depense:
-                montant_centimes = int(round(montant_saisi * 100))
-                participant_ids = [p["id"] for p in participants_selectionnes]
-                date_str = date_depense.isoformat()
+                # Prévisualisation du partage
+                if montant_saisi > 0 and participants_selectionnes:
+                    montant_cts = int(round(montant_saisi * 100))
+                    p_ids = [p["id"] for p in participants_selectionnes]
+                    repartition = modele.calculer_parts_depense(montant_cts, p_ids)
+                    id_to_nom = {m["id"]: m["nom"] for m in membres_actifs}
+                    apercu_parts = [
+                        f"{id_to_nom[r['membre_id']]}: {modele.centimes_en_euros_str(r['part_centimes'])}"
+                        for r in repartition
+                    ]
+                    st.info(f"🔎 **Aperçu du partage :** {', '.join(apercu_parts)}")
 
-                # Validations avec messages d'erreurs clairs
-                erreurs = []
-                if not libelle.strip():
-                    erreurs.append("Le libellé de la dépense ne peut pas être vide.")
-                if montant_centimes <= 0:
-                    erreurs.append("Une dépense doit avoir un montant strictement positif (> 0 €).")
-                if not participant_ids:
-                    erreurs.append("Une dépense doit avoir au moins un participant.")
-                if date_str < groupe_actif["date_debut"] or date_str > groupe_actif["date_fin"]:
-                    erreurs.append(
-                        f"La date de la dépense ({modele.formater_date_fr(date_str)}) est hors séjour. "
-                        f"Elle doit être comprise entre le {modele.formater_date_fr(groupe_actif['date_debut'])} "
-                        f"et le {modele.formater_date_fr(groupe_actif['date_fin'])} inclus."
-                    )
-                if not payeur:
-                    erreurs.append("Veuillez sélectionner un payeur appartenant au groupe.")
+                btn_ajouter_depense = st.form_submit_button("Ajouter la dépense", type="primary")
 
-                if erreurs:
-                    for err in erreurs:
-                        st.error(f"❌ {err} (Dépense refusée, soldes inchangés)")
-                else:
-                    try:
-                        modele.ajouter_depense(
-                            conn,
-                            groupe_id=groupe_actif_id,
-                            libelle=libelle,
-                            montant_centimes=montant_centimes,
-                            date_val=date_str,
-                            payeur_id=payeur["id"],
-                            participant_ids=participant_ids,
+                if btn_ajouter_depense:
+                    montant_centimes = int(round(montant_saisi * 100))
+                    participant_ids = [p["id"] for p in participants_selectionnes]
+                    date_str = date_depense.isoformat()
+
+                    # Validations avec messages d'erreurs clairs
+                    erreurs = []
+                    if not libelle.strip():
+                        erreurs.append("Le libellé de la dépense ne peut pas être vide.")
+                    if not categorie.strip():
+                        erreurs.append("La dépense doit obligatoirement avoir une catégorie.")
+                    if montant_centimes <= 0:
+                        erreurs.append("Une dépense doit avoir un montant strictement positif (> 0 €).")
+                    if not participant_ids:
+                        erreurs.append("Une dépense doit avoir au moins un participant.")
+                    if date_str < groupe_actif["date_debut"] or date_str > groupe_actif["date_fin"]:
+                        erreurs.append(
+                            f"La date de la dépense ({modele.formater_date_fr(date_str)}) est hors séjour. "
+                            f"Elle doit être comprise entre le {modele.formater_date_fr(groupe_actif['date_debut'])} "
+                            f"et le {modele.formater_date_fr(groupe_actif['date_fin'])} inclus."
                         )
-                        st.success("✅ Dépense enregistrée avec succès !")
-                        st.rerun()
-                    except Exception as ex:
-                        st.error(f"❌ Erreur lors de l'enregistrement : {ex} (Soldes inchangés)")
+                    if not payeur:
+                        erreurs.append("Veuillez sélectionner un payeur appartenant au groupe.")
+
+                    if erreurs:
+                        for err in erreurs:
+                            st.error(f"❌ {err} (Dépense refusée, soldes inchangés)")
+                    else:
+                        try:
+                            modele.ajouter_depense(
+                                conn,
+                                groupe_id=groupe_actif_id,
+                                libelle=libelle,
+                                montant_centimes=montant_centimes,
+                                date_val=date_str,
+                                payeur_id=payeur["id"],
+                                participant_ids=participant_ids,
+                                categorie=categorie,
+                            )
+                            st.success("✅ Dépense enregistrée avec succès !")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ Erreur lors de l'enregistrement : {ex} (Soldes inchangés)")
+
+        else:
+            # Formulaire de remboursement entre membres
+            st.caption(
+                "Un remboursement est un type de dépense particulier d'un membre vers un autre "
+                "(ex: virement bancaire). Le membre payeur rembourse sa dette envers le membre bénéficiaire."
+            )
+            with st.form("form_remboursement", clear_on_submit=True):
+                col_p, col_b = st.columns(2)
+                payeur_remb = col_p.selectbox(
+                    "Membre qui rembourse (payeur) *",
+                    options=membres_actifs,
+                    format_func=lambda m: m["nom"],
+                    key="sel_remb_payeur",
+                )
+                beneficiaires_possibles = [m for m in membres_actifs if m["id"] != payeur_remb["id"]]
+                beneficiaire_remb = col_b.selectbox(
+                    "Membre remboursé (bénéficiaire) *",
+                    options=beneficiaires_possibles,
+                    format_func=lambda m: m["nom"],
+                    key="sel_remb_beneficiaire",
+                )
+
+                col_rm, col_rd = st.columns(2)
+                montant_remb_saisi = col_rm.number_input(
+                    "Montant remboursé en euros (€) *",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1.0,
+                    format="%.2f",
+                )
+                date_remb = col_rd.date_input(
+                    "Date du virement / remboursement *",
+                    value=date_defaut,
+                    format="DD/MM/YYYY",
+                )
+                libelle_remb = st.text_input(
+                    "Libellé du virement (optionnel)",
+                    placeholder=f"Remboursement de {payeur_remb['nom']} à {beneficiaire_remb['nom'] if beneficiaire_remb else ''}",
+                )
+
+                btn_ajouter_remb = st.form_submit_button("Enregistrer le remboursement", type="primary")
+
+                if btn_ajouter_remb:
+                    montant_cts = int(round(montant_remb_saisi * 100))
+                    date_str = date_remb.isoformat()
+                    erreurs = []
+                    if not beneficiaire_remb:
+                        erreurs.append("Veuillez sélectionner un membre bénéficiaire.")
+                    if montant_cts <= 0:
+                        erreurs.append("Le montant du remboursement doit être strictement supérieur à 0 €.")
+                    if date_str < groupe_actif["date_debut"] or date_str > groupe_actif["date_fin"]:
+                        erreurs.append(
+                            f"La date du remboursement ({modele.formater_date_fr(date_str)}) est hors séjour. "
+                            f"Elle doit être comprise entre le {modele.formater_date_fr(groupe_actif['date_debut'])} "
+                            f"et le {modele.formater_date_fr(groupe_actif['date_fin'])} inclus."
+                        )
+
+                    if erreurs:
+                        for err in erreurs:
+                            st.error(f"❌ {err} (Remboursement refusé)")
+                    else:
+                        try:
+                            modele.ajouter_remboursement(
+                                conn=conn,
+                                groupe_id=groupe_actif_id,
+                                payeur_id=payeur_remb["id"],
+                                beneficiaire_id=beneficiaire_remb["id"],
+                                montant_centimes=montant_cts,
+                                date_val=date_str,
+                                libelle=libelle_remb,
+                            )
+                            st.success("✅ Remboursement enregistré avec succès !")
+                            st.rerun()
+                        except Exception as ex:
+                            st.error(f"❌ Erreur lors de l'enregistrement : {ex}")
 
 # ------------------------------------------------------------------------------
 # ONGLET 3 : LISTE & SUPPRESSION DES DÉPENSES
@@ -367,11 +489,15 @@ with tab_liste_depenses:
     if not depenses_actives:
         st.info("Aucune dépense enregistrée pour ce séjour pour le moment.")
     else:
-        # Filtres : par membre, par période et recherche textuelle
-        col_filtre_m, col_recherche = st.columns(2)
+        # Filtres : par membre, par catégorie, par période et recherche textuelle
+        col_filtre_m, col_filtre_cat, col_recherche = st.columns(3)
         filtre_membre = col_filtre_m.selectbox(
-            "Filtrer par membre (payeur ou participant) :",
+            "Filtrer par membre :",
             options=["Tous les membres"] + [m["nom"] for m in membres_actifs],
+        )
+        filtre_cat = col_filtre_cat.selectbox(
+            "Filtrer par catégorie :",
+            options=["Toutes les catégories"] + modele.TOUTES_CATEGORIES,
         )
         recherche_texte = col_recherche.text_input(
             "Rechercher par libellé :",
@@ -404,6 +530,9 @@ with tab_liste_depenses:
                 noms_participants = [p["nom"] for p in dep["participants"]]
                 concerne_membre = (dep["payeur_nom"] == filtre_membre) or (filtre_membre in noms_participants)
 
+            # Filtre catégorie
+            concerne_cat = (filtre_cat == "Toutes les catégories") or (dep["categorie"] == filtre_cat)
+
             # Filtre texte
             concerne_texte = True
             if recherche_texte:
@@ -413,7 +542,7 @@ with tab_liste_depenses:
             dep_date = date.fromisoformat(dep["date"])
             concerne_periode = filtre_date_min <= dep_date <= filtre_date_max
 
-            if concerne_membre and concerne_texte and concerne_periode:
+            if concerne_membre and concerne_cat and concerne_texte and concerne_periode:
                 depenses_filtrees.append(dep)
 
         st.caption(f"Affichage de {len(depenses_filtrees)} dépense(s) sur {len(depenses_actives)}")
@@ -423,18 +552,28 @@ with tab_liste_depenses:
             with st.container():
                 col_info, col_actions = st.columns([4, 2])
                 with col_info:
-                    st.markdown(f"#### 💳 {dep['libelle']} — **{montant_str}**")
-                    st.write(
-                        f"📅 **Date :** `{modele.formater_date_fr(dep['date'])}` &nbsp;|&nbsp; "
-                        f"👤 **Payeur :** **{dep['payeur_nom']}**"
-                    )
+                    if dep.get("est_remboursement"):
+                        dest_nom = dep["participants"][0]["nom"] if dep["participants"] else "Membre"
+                        st.markdown(f"#### 💸 Remboursement : **{dep['payeur_nom']}** ➔ **{dest_nom}** — **{montant_str}**")
+                        st.write(
+                            f"📅 **Date :** `{modele.formater_date_fr(dep['date'])}` &nbsp;|&nbsp; "
+                            f"🏷️ **Catégorie :** `{dep['categorie']}` &nbsp;|&nbsp; "
+                            f"ℹ️ *{dep['libelle']}*"
+                        )
+                    else:
+                        st.markdown(f"#### 💳 {dep['libelle']} — **{montant_str}**")
+                        st.write(
+                            f"📅 **Date :** `{modele.formater_date_fr(dep['date'])}` &nbsp;|&nbsp; "
+                            f"👤 **Payeur :** **{dep['payeur_nom']}** &nbsp;|&nbsp; "
+                            f"🏷️ **Catégorie :** `{dep['categorie']}`"
+                        )
 
-                    # Détail des parts
-                    details_parts = [
-                        f"{p['nom']} ({modele.centimes_en_euros_str(p['part_centimes'])})"
-                        for p in dep["participants"]
-                    ]
-                    st.caption(f"**Partagé entre ({len(dep['participants'])}) :** {', '.join(details_parts)}")
+                        # Détail des parts
+                        details_parts = [
+                            f"{p['nom']} ({modele.centimes_en_euros_str(p['part_centimes'])})"
+                            for p in dep["participants"]
+                        ]
+                        st.caption(f"**Partagé entre ({len(dep['participants'])}) :** {', '.join(details_parts)}")
 
                 with col_actions:
                     st.write("")
@@ -457,7 +596,17 @@ with tab_liste_depenses:
                     with st.expander(f"✏️ Modifier la dépense '{dep['libelle']}'", expanded=True):
                         with st.form(f"form_modif_{dep['id']}"):
                             edit_libelle = st.text_input("Libellé", value=dep["libelle"])
-                            c_em, c_ed = st.columns(2)
+                            c_ecat, c_em, c_ed = st.columns(3)
+                            cat_idx = (
+                                modele.TOUTES_CATEGORIES.index(dep["categorie"])
+                                if dep["categorie"] in modele.TOUTES_CATEGORIES
+                                else 0
+                            )
+                            edit_cat = c_ecat.selectbox(
+                                "Catégorie *",
+                                options=modele.TOUTES_CATEGORIES,
+                                index=cat_idx,
+                            )
                             edit_montant = c_em.number_input(
                                 "Montant (€)",
                                 min_value=0.01,
@@ -513,6 +662,7 @@ with tab_liste_depenses:
                                         date_val=edit_date.isoformat(),
                                         payeur_id=edit_payeur["id"],
                                         participant_ids=edit_p_ids,
+                                        categorie=edit_cat,
                                     )
                                     st.session_state[cle_edition] = False
                                     st.success("Dépense modifiée avec succès !")
@@ -535,7 +685,7 @@ with tab_export:
     if depenses_actives:
         output_dep = io.StringIO()
         writer_dep = csv.writer(output_dep, delimiter=";")
-        writer_dep.writerow(["ID", "Date", "Libellé", "Montant_EUR", "Payeur", "Participants_et_parts"])
+        writer_dep.writerow(["ID", "Date", "Libellé", "Catégorie", "Montant_EUR", "Payeur", "Participants_et_parts"])
         for d in depenses_actives:
             parts_str = ", ".join(
                 f"{p['nom']} ({modele.centimes_en_euros_str(p['part_centimes'])})"
@@ -545,6 +695,7 @@ with tab_export:
                 d["id"],
                 modele.formater_date_fr(d["date"]),
                 d["libelle"],
+                d.get("categorie", "Autre"),
                 f"{d['montant_centimes'] / 100:.2f}",
                 d["payeur_nom"],
                 parts_str,
